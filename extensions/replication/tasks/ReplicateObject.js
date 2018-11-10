@@ -18,8 +18,6 @@ const RoleCredentials =
 const { metricsExtension, metricsTypeQueued, metricsTypeCompleted } =
     require('../constants');
 
-const MPU_CONC_LIMIT = 10;
-
 function _extractAccountIdFromRole(role) {
     return role.split(':')[4];
 }
@@ -114,7 +112,8 @@ class ReplicateObject extends BackbeatTask {
 
     _getAndPutPart(sourceEntry, destEntry, part, log, cb) {
         const partLogger = this.logger.newRequestLogger(log.getUids());
-        this.retry({
+        this.poolAndRetry({
+            locationType: 'foo',
             actionDesc: 'stream part data',
             logFields: { entry: sourceEntry.getLogInfo(), part },
             actionFunc: done => this._getAndPutPartOnce(
@@ -312,7 +311,7 @@ class ReplicateObject extends BackbeatTask {
             return cb(errors.InternalError.customizeDescription(errMessage));
         }
         const locations = sourceEntry.getReducedLocations();
-        return async.mapLimit(locations, MPU_CONC_LIMIT, (part, done) => {
+        return async.map(locations, (part, done) => {
             this._getAndPutPart(sourceEntry, destEntry, part, log, done);
         }, cb);
     }

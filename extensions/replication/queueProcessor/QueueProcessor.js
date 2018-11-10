@@ -156,6 +156,8 @@ class QueueProcessor extends EventEmitter {
 
         this.taskScheduler = new ReplicationTaskScheduler(
             (ctx, done) => ctx.task.processQueueEntry(ctx.entry, done));
+        this.cloudTaskQueue = async.queue(
+            (ctx, done) => ctx.task.exec(ctx.params, done));
     }
 
     _setupVaultclientCache() {

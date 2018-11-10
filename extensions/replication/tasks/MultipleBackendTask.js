@@ -12,7 +12,6 @@ const getExtMetrics = require('../utils/getExtMetrics');
 const { metricsExtension, metricsTypeQueued, metricsTypeCompleted } =
     require('../constants');
 
-const MPU_CONC_LIMIT = 10;
 const MPU_GCP_MAX_PARTS = 1024;
 
 class MultipleBackendTask extends ReplicateObject {
@@ -145,7 +144,8 @@ class MultipleBackendTask extends ReplicateObject {
      */
     _getRangeAndPutMPUPart(sourceEntry, destEntry, range, partNumber, uploadId,
         log, cb) {
-        this.retry({
+        this.poolAndRetry({
+            locationType: 'foo',
             actionDesc: 'stream part data',
             logFields: { entry: sourceEntry.getLogInfo() },
             actionFunc: done => this._getRangeAndPutMPUPartOnce(sourceEntry,
@@ -462,7 +462,7 @@ class MultipleBackendTask extends ReplicateObject {
         const isGCP = this._getReplicationEndpointType() === 'gcp';
         const isAzure = this._getReplicationEndpointType() === 'azure';
         const ranges = this._getRanges(sourceEntry.getContentLength(), isGCP);
-        return async.timesLimit(ranges.length, MPU_CONC_LIMIT, (n, next) =>
+        return async.times(ranges.length, (n, next) =>
             this._getRangeAndPutMPUPart(sourceEntry, destEntry, ranges[n],
                 n + 1, uploadId, log, (err, data) => {
                     if (err) {
@@ -620,7 +620,8 @@ class MultipleBackendTask extends ReplicateObject {
     }
 
     _putObjectTagging(sourceEntry, destEntry, log, cb) {
-        this.retry({
+        this.poolAndRetry({
+            locationType: 'foo',
             actionDesc: 'send object tagging XML data',
             entry: sourceEntry,
             logFields: { entry: sourceEntry.getLogInfo() },
@@ -667,7 +668,8 @@ class MultipleBackendTask extends ReplicateObject {
     }
 
     _deleteObjectTagging(sourceEntry, destEntry, log, cb) {
-        this.retry({
+        this.poolAndRetry({
+            locationType: 'foo',
             actionDesc: 'delete object tagging',
             logFields: { entry: sourceEntry.getLogInfo() },
             actionFunc: done => this._deleteObjectTaggingOnce(sourceEntry,
@@ -736,12 +738,13 @@ class MultipleBackendTask extends ReplicateObject {
             sourceEntry.getContentLength(), sourceEntry);
         return this.mProducer.publishMetrics(extMetrics,
             metricsTypeQueued, metricsExtension, () =>
-            async.mapLimit(locations, MPU_CONC_LIMIT, (part, done) =>
+            async.map(locations, (part, done) =>
             this._getAndPutPart(sourceEntry, destEntry, part, log, done), cb));
     }
 
     _putDeleteMarker(sourceEntry, destEntry, log, cb) {
-        this.retry({
+        this.poolAndRetry({
+            locationType: 'foo',
             actionDesc: 'put delete marker',
             logFields: { entry: sourceEntry.getLogInfo() },
             actionFunc: done => this._putDeleteMarkerOnce(

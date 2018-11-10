@@ -11,6 +11,14 @@ const qpRetryJoi = joi.object({
     scality: retryParamsJoi,
 });
 
+const qpConcurrencyJoi = joi.object({
+    // eslint-disable-next-line camelcase
+    aws_s3: joi.number().greater(0).default(10),
+    azure: joi.number().greater(0).default(10),
+    gcp: joi.number().greater(0).default(10),
+    scality: joi.number().greater(0).default(10),
+});
+
 const CRR_FAILURE_EXPIRY = 24 * 60 * 60; // Expire Redis keys after 24 hours.
 
 const joiSchema = {
@@ -60,7 +68,7 @@ const joiSchema = {
     queueProcessor: {
         groupId: joi.string().required(),
         retry: qpRetryJoi,
-        concurrency: joi.number().greater(0).default(10),
+        concurrency: qpConcurrencyJoi,
     },
     replicationStatusProcessor: {
         groupId: joi.string().required(),

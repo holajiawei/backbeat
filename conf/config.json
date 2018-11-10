@@ -144,7 +144,12 @@
                         }
                     }
                 },
-                "concurrency": 10
+                "concurrency": {
+                    "aws_s3": 10,
+                    "azure": 10,
+                    "gcp": 10,
+                    "scality": 10
+                }
             },
             "replicationStatusProcessor": {
                 "groupId": "backbeat-replication-group",
