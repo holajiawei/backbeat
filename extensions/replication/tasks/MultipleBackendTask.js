@@ -7,6 +7,7 @@ const ObjectMD = require('arsenal').models.ObjectMD;
 const ObjectMDLocation = require('arsenal').models.ObjectMDLocation;
 const BackbeatMetadataProxy = require('../../../lib/BackbeatMetadataProxy');
 const ObjectQueueEntry = require('../../../lib/models/ObjectQueueEntry');
+const ActionQueueEntry = require('../../../lib/models/ActionQueueEntry');
 
 const ReplicateObject = require('./ReplicateObject');
 const { attachReqUids } = require('../../../lib/clients/utils');
@@ -1013,6 +1014,14 @@ class MultipleBackendTask extends ReplicateObject {
 
     processQueueEntry(sourceEntry, kafkaEntry, done) {
         const log = this.logger.newRequestLogger();
+        if (sourceEntry instanceof ActionQueueEntry) {
+            if (sourceEntry.getActionType() === 'lifecycleTransition') {
+                return this._processTransitionAction(
+                    sourceEntry, kafkaEntry, log, done);
+            }
+            // skip unsupported actions
+            return done(errors.InvalidObjectState);
+        }
         const content = sourceEntry.getReplicationContent();
         log.debug('processing entry', { entry: sourceEntry.getLogInfo() });
 
@@ -1112,6 +1121,10 @@ class MultipleBackendTask extends ReplicateObject {
                 kafkaEntry,
             });
         return done(null, { committable: false });
+    }
+
+    _processTransitionAction(sourceEntry, kafkaEntry, log, done) {
+        return done();
     }
 }
 
