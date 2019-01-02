@@ -25,28 +25,25 @@ class MultipleBackendTask extends ReplicateObject {
         return replicationEndpoint.type;
     }
 
-    _setupRolesOnce(entry, log, cb) {
-        log.debug('getting bucket replication', { entry: entry.getLogInfo() });
-        const entryRolesString = entry.getReplicationRoles();
-        let errMessage;
-        let entryRoles;
-        if (entryRolesString !== undefined) {
-            entryRoles = entryRolesString.split(',');
-        }
-        if (entryRoles === undefined || entryRoles.length > 2) {
-            errMessage = 'expecting no more than two roles in bucket ' +
-                'replication configuration when replicating to an external ' +
-                'location';
-            log.error(errMessage, {
-                method: 'MultipleBackendTask._setupRolesOnce',
-                entry: entry.getLogInfo(),
-                roles: entryRolesString,
-            });
-            return cb(errors.BadRole.customizeDescription(errMessage));
-        }
-        this.sourceRole = entryRoles[0];
+    _getBucketReplicationConfiguration(entry, log, cb) {
+        this.retry({
+            actionDesc: 'get bucket replication configuration',
+            logFields: { entry: entry.getLogInfo() },
+            actionFunc: done => this._getBucketReplicationConfigurationOnce(
+                entry, log, done),
+            // Rely on AWS SDK notion of retryable error to decide if
+            // we should set the entry replication status to FAILED
+            // (non retryable) or retry later.
+            shouldRetryFunc: err => err.retryable,
+            log,
+        }, cb);
+    }
 
-        this._setupSourceClients(this.sourceRole, log);
+    _getBucketReplicationConfigurationOnce(entry, log, cb) {
+        log.debug('getting bucket replication', { entry: entry.getLogInfo() });
+        let errMessage;
+
+        this._setupSourceClients(null, log);
 
         const req = this.S3source.getBucketReplication({
             Bucket: entry.getBucket(),
@@ -55,7 +52,8 @@ class MultipleBackendTask extends ReplicateObject {
         return req.send((err, data) => {
             if (err) {
                 log.error('error getting replication configuration from S3', {
-                    method: 'MultipleBackendTask._setupRolesOnce',
+                    method: 'MultipleBackendTask.' +
+                        '_getBucketReplicationConfigurationOnce',
                     entry: entry.getLogInfo(),
                     origin: 'source',
                     peer: this.sourceConfig.s3,
@@ -72,33 +70,12 @@ class MultipleBackendTask extends ReplicateObject {
             if (!replicationEnabled) {
                 errMessage = 'replication disabled for object';
                 log.debug(errMessage, {
-                    method: 'MultipleBackendTask._setupRolesOnce',
+                    method: 'MultipleBackendTask.' +
+                        '_getBucketReplicationConfigurationOnce',
                     entry: entry.getLogInfo(),
                 });
                 return cb(errors.PreconditionFailed.customizeDescription(
                     errMessage));
-            }
-            const roles = data.ReplicationConfiguration.Role.split(',');
-            if (roles.length > 2) {
-                errMessage = 'expecting no more than two roles in bucket ' +
-                    'replication configuration when replicating to an ' +
-                    'external location';
-                log.error(errMessage, {
-                    method: 'MultipleBackendTask._setupRolesOnce',
-                    entry: entry.getLogInfo(),
-                    roles,
-                });
-                return cb(errors.BadRole.customizeDescription(errMessage));
-            }
-            if (roles[0] !== entryRoles[0]) {
-                log.error('role in replication entry for source does not ' +
-                'match role in bucket replication configuration', {
-                    method: 'MultipleBackendTask._setupRolesOnce',
-                    entry: entry.getLogInfo(),
-                    entryRole: entryRoles[0],
-                    bucketRole: roles[0],
-                });
-                return cb(errors.BadRole);
             }
             return cb();
         });
@@ -773,8 +750,6 @@ class MultipleBackendTask extends ReplicateObject {
         const { transport, s3, auth } = this.sourceConfig;
         const metadataProxy = new BackbeatMetadataProxy(
             `${transport}://${s3.host}:${s3.port}`, auth);
-        const sourceRole = sourceEntry.getReplicationRoles().split(',')[0];
-        metadataProxy.setSourceRole(sourceRole);
         metadataProxy.setSourceClient(log);
         metadataProxy.getMetadata({
             bucket: sourceEntry.getBucket(),
@@ -1031,13 +1006,9 @@ class MultipleBackendTask extends ReplicateObject {
      * @return {undefined}
      */
     _setupClients(entry, log, cb) {
+        this._setupSourceClients(null, log);
         if (entry.isReplicationOperation()) {
-            // Sets up source clients using the role from the replication
-            // configuration if the authentication type is as such.
-            return this._setupRoles(entry, log, cb);
-        }
-        if (entry.isLifecycleOperation()) {
-            this._setupSourceClients(undefined, log);
+            return this._getBucketReplicationConfiguration(entry, log, cb);
         }
         return cb();
     }
