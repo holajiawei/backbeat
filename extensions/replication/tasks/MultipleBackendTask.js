@@ -43,8 +43,6 @@ class MultipleBackendTask extends ReplicateObject {
         log.debug('getting bucket replication', { entry: entry.getLogInfo() });
         let errMessage;
 
-        this._setupSourceClients(null, log);
-
         const req = this.S3source.getBucketReplication({
             Bucket: entry.getBucket(),
         });
