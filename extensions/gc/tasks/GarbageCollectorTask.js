@@ -6,7 +6,7 @@ const { getAccountCredentials } =
 
 class GarbageCollectorTask extends BackbeatTask {
     /**
-     * Process a lifecycle object entry
+     * Process a garbage-collection entry
      *
      * @constructor
      * @param {GarbageCollector} gc - garbage collector instance

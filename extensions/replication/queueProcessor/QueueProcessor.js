@@ -25,6 +25,7 @@ const EchoBucket = require('../tasks/EchoBucket');
 
 const ObjectQueueEntry = require('../../../lib/models/ObjectQueueEntry');
 const BucketQueueEntry = require('../../../lib/models/BucketQueueEntry');
+const ActionQueueEntry = require('../../../lib/models/ActionQueueEntry');
 const MetricsProducer = require('../../../lib/MetricsProducer');
 
 const {
@@ -654,9 +655,11 @@ class QueueProcessor extends EventEmitter {
             return process.nextTick(done);
         }
         let task;
+        let canonicalKey;
         if (sourceEntry instanceof BucketQueueEntry) {
             if (this.echoMode) {
                 task = new EchoBucket(this);
+                canonicalKey = sourceEntry.getCanonicalKey();
             }
             // ignore bucket entry if echo mode disabled
         } else if (sourceEntry instanceof ObjectQueueEntry) {
@@ -672,6 +675,13 @@ class QueueProcessor extends EventEmitter {
                 } else {
                     task = new ReplicateObject(this);
                 }
+                canonicalKey = sourceEntry.getCanonicalKey();
+            }
+        } else if (sourceEntry instanceof ActionQueueEntry) {
+            if (sourceEntry.getActionType() === 'lifecycleTransition') {
+                task = new MultipleBackendTask(this);
+                const target = sourceEntry.getActionTarget();
+                canonicalKey = `${target.bucket}/${target.key}`;
             }
         }
         if (task) {
@@ -679,8 +689,7 @@ class QueueProcessor extends EventEmitter {
               { entry: sourceEntry.getLogInfo() });
             return this.taskScheduler.push({ task, entry: sourceEntry,
                                              kafkaEntry },
-                                           sourceEntry.getCanonicalKey(),
-                                           done);
+                                           canonicalKey, done);
         }
         this.logger.debug('skip source entry',
                           { entry: sourceEntry.getLogInfo() });
