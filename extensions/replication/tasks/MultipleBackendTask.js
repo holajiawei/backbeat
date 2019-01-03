@@ -5,8 +5,6 @@ const errors = require('arsenal').errors;
 const jsutil = require('arsenal').jsutil;
 const ObjectMD = require('arsenal').models.ObjectMD;
 const ObjectMDLocation = require('arsenal').models.ObjectMDLocation;
-const BackbeatMetadataProxy = require('../../../lib/BackbeatMetadataProxy');
-const ObjectQueueEntry = require('../../../lib/models/ObjectQueueEntry');
 const ActionQueueEntry = require('../../../lib/models/ActionQueueEntry');
 
 const ReplicateObject = require('./ReplicateObject');
@@ -80,11 +78,11 @@ class MultipleBackendTask extends ReplicateObject {
         });
     }
 
-    _fetchSourceMD(sourceEntry, log, cb) {
+    _fetchSourceMD(bucket, objectKey, encodedVersionId, log, cb) {
         const params = {
-            bucket: sourceEntry.getBucket(),
-            objectKey: sourceEntry.getObjectKey(),
-            encodedVersionId: sourceEntry.getEncodedVersionId(),
+            bucket,
+            objectKey,
+            encodedVersionId,
         };
         return this.backbeatSourceProxy.getMetadata(
         params, log, (err, blob) => {
@@ -708,7 +706,7 @@ class MultipleBackendTask extends ReplicateObject {
     _checkObjectState(sourceEntry, log, cb) {
         return this._fetchSourceMD(
         sourceEntry.getBucket(), sourceEntry.getObjectKey(),
-            sourceEntry.getEncodedVersionId(), log, (err, objMD) => {
+        sourceEntry.getEncodedVersionId(), log, (err, objMD) => {
             if (err && err.code === 'ObjNotFound' &&
             !sourceEntry.getIsDeleteMarker()) {
                 // The source object was unexpectedly deleted, so we skip CRR
@@ -990,7 +988,9 @@ class MultipleBackendTask extends ReplicateObject {
         return async.waterfall([
             next => this._getBucketReplicationConfiguration(
                 sourceEntry, log, next),
-            next => this._fetchSourceMD(sourceEntry, log, (err, res) => {
+            next => this._fetchSourceMD(
+            sourceEntry.getBucket(), sourceEntry.getObjectKey(),
+            sourceEntry.getEncodedVersionId(), log, (err, objMD) => {
                 if (err && err.code === 'ObjNotFound' &&
                     sourceEntry.getReplicationIsNFS() &&
                     !sourceEntry.getIsDeleteMarker()) {
@@ -1001,15 +1001,14 @@ class MultipleBackendTask extends ReplicateObject {
                 if (err) {
                     return next(err);
                 }
-                return next(null, res);
+                return next(null, objMD);
             }),
-            (sourceMD, next) => {
+            (objMD, next) => {
                 if (sourceEntry.getIsDeleteMarker()) {
                     return this._putDeleteMarker(sourceEntry, log, next);
                 }
-                const status = sourceMD.getReplicationSiteStatus(
-                    this.site);
-                log.debug('refreshed entry site replication info', {
+                const status = objMD.getReplicationSiteStatus(this.site);
+                log.debug('fetched source metadata', {
                     entry: sourceEntry.getLogInfo(),
                     site: this.site, siteStatus: status,
                     content,
