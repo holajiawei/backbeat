@@ -655,6 +655,7 @@ class QueueProcessor extends EventEmitter {
             return process.nextTick(done);
         }
         let task;
+        // operations with matching canonical key will be serialized
         let canonicalKey;
         if (sourceEntry instanceof BucketQueueEntry) {
             if (this.echoMode) {
@@ -678,10 +679,14 @@ class QueueProcessor extends EventEmitter {
                 canonicalKey = sourceEntry.getCanonicalKey();
             }
         } else if (sourceEntry instanceof ActionQueueEntry) {
-            if (sourceEntry.getActionType() === 'lifecycleTransition') {
+            if (sourceEntry.getActionType() === 'copyData') {
                 task = new MultipleBackendTask(this);
                 const target = sourceEntry.getActionTarget();
                 canonicalKey = `${target.bucket}/${target.key}`;
+            } else {
+                this.logger.warn('skipping unsupported action', {
+                    entry: sourceEntry.getLogInfo(),
+                });
             }
         }
         if (task) {

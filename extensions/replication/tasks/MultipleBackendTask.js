@@ -996,37 +996,29 @@ class MultipleBackendTask extends ReplicateObject {
         });
     }
 
-    /**
-     * Sets up the clients used for data and metadata requests to the source
-     * CloudServer.
-     * @param {ObjectQueueEntry} entry - The source object entry
-     * @param {Werelogs} log - The logger instance
-     * @param {Function} cb - The callback to call
-     * @return {undefined}
-     */
-    _setupClients(entry, log, cb) {
-        this._setupSourceClients(null, log);
-        if (entry.isReplicationOperation()) {
-            return this._getBucketReplicationConfiguration(entry, log, cb);
-        }
-        return cb();
-    }
-
     processQueueEntry(sourceEntry, kafkaEntry, done) {
         const log = this.logger.newRequestLogger();
         if (sourceEntry instanceof ActionQueueEntry) {
-            if (sourceEntry.getActionType() === 'lifecycleTransition') {
-                return this._processTransitionAction(
+            if (sourceEntry.getActionType() === 'copyData') {
+                return this._processCopyDataAction(
                     sourceEntry, kafkaEntry, log, done);
             }
-            // skip unsupported actions
-            return done(errors.InvalidObjectState);
+            return done(errors.InternalError);
         }
-        const content = sourceEntry.getReplicationContent();
-        log.debug('processing entry', { entry: sourceEntry.getLogInfo() });
+        return this._processReplicationEntry(
+            sourceEntry, kafkaEntry, log, done);
+    }
 
+    _processReplicationEntry(sourceEntry, kafkaEntry, log, done) {
+        log.debug('processing replication entry', {
+            entry: sourceEntry.getLogInfo(),
+        });
+
+        this._setupSourceClients(null, log);
+        const content = sourceEntry.getReplicationContent();
         return async.waterfall([
-            next => this._setupClients(sourceEntry, log, next),
+            next => this._getBucketReplicationConfiguration(
+                sourceEntry, log, next),
             next => this._refreshSourceEntry(sourceEntry, log, (err, res) => {
                 if (err && err.code === 'ObjNotFound' &&
                     sourceEntry.getReplicationIsNFS() &&
@@ -1123,7 +1115,12 @@ class MultipleBackendTask extends ReplicateObject {
         return done(null, { committable: false });
     }
 
-    _processTransitionAction(sourceEntry, kafkaEntry, log, done) {
+    _processCopyDataAction(sourceEntry, kafkaEntry, log, done) {
+        log.debug('processing copyData action entry', {
+            entry: sourceEntry.getLogInfo(),
+        });
+
+        this._setupSourceClients(null, log);
         return done();
     }
 }
