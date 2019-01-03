@@ -80,7 +80,7 @@ class MultipleBackendTask extends ReplicateObject {
         });
     }
 
-    _refreshSourceEntry(sourceEntry, log, cb) {
+    _fetchSourceMD(sourceEntry, log, cb) {
         const params = {
             bucket: sourceEntry.getBucket(),
             objectKey: sourceEntry.getObjectKey(),
@@ -90,23 +90,21 @@ class MultipleBackendTask extends ReplicateObject {
         params, log, (err, blob) => {
             if (err) {
                 log.error('error getting metadata blob from S3', {
-                    method: 'MultipleBackendTask._refreshSourceEntry',
+                    method: 'MultipleBackendTask._fetchSourceMD',
                     error: err,
                 });
                 return cb(err);
             }
-            const parsedEntry = ObjectQueueEntry.createFromBlob(blob.Body);
-            if (parsedEntry.error) {
+            const res = ObjectMD.createFromBlob(blob.Body);
+            if (res.error) {
                 log.error('error parsing metadata blob', {
-                    error: parsedEntry.error,
-                    method: 'MultipleBackendTask._refreshSourceEntry',
+                    error: res.error,
+                    method: 'MultipleBackendTask._fetchSourceMD',
                 });
                 return cb(errors.InternalError.
                     customizeDescription('error parsing metadata blob'));
             }
-            const refreshedEntry = new ObjectQueueEntry(sourceEntry.getBucket(),
-                sourceEntry.getObjectVersionedKey(), parsedEntry.result);
-            return cb(null, refreshedEntry);
+            return cb(null, res.result);
         });
     }
 
@@ -708,7 +706,9 @@ class MultipleBackendTask extends ReplicateObject {
      * @return {undefined}
      */
     _checkObjectState(sourceEntry, log, cb) {
-        return this._getSourceMD(sourceEntry, log, (err, res) => {
+        return this._fetchSourceMD(
+        sourceEntry.getBucket(), sourceEntry.getObjectKey(),
+            sourceEntry.getEncodedVersionId(), log, (err, objMD) => {
             if (err && err.code === 'ObjNotFound' &&
             !sourceEntry.getIsDeleteMarker()) {
                 // The source object was unexpectedly deleted, so we skip CRR
@@ -718,16 +718,6 @@ class MultipleBackendTask extends ReplicateObject {
             if (err) {
                 return cb(err);
             }
-            let metadata;
-            try {
-                metadata = JSON.parse(res.Body);
-            } catch (e) {
-                log.error('malformed metadata from source', {
-                    error: e.message,
-                });
-                return cb(errors.InternalError);
-            }
-            const objMD = new ObjectMD(metadata);
             if (objMD.getContentMd5() !== sourceEntry.getContentMd5()) {
                 // The latest object has different content so an attempt at CRR
                 // will fail in CloudServer. We can safely skip this entry
@@ -736,25 +726,6 @@ class MultipleBackendTask extends ReplicateObject {
             }
             return cb();
         });
-    }
-
-    /**
-     * Get the source object's metadata.
-     * @param {ObjectQueueEntry} sourceEntry - The source object entry
-     * @param {Werelogs} log - The logger instance
-     * @param {Function} cb - The callback to call
-     * @return {undefined}
-     */
-    _getSourceMD(sourceEntry, log, cb) {
-        const { transport, s3, auth } = this.sourceConfig;
-        const metadataProxy = new BackbeatMetadataProxy(
-            `${transport}://${s3.host}:${s3.port}`, auth);
-        metadataProxy.setSourceClient(log);
-        metadataProxy.getMetadata({
-            bucket: sourceEntry.getBucket(),
-            objectKey: sourceEntry.getObjectKey(),
-            encodedVersionId: sourceEntry.getEncodedVersionId(),
-        }, log, cb);
     }
 
     /**
@@ -1019,7 +990,7 @@ class MultipleBackendTask extends ReplicateObject {
         return async.waterfall([
             next => this._getBucketReplicationConfiguration(
                 sourceEntry, log, next),
-            next => this._refreshSourceEntry(sourceEntry, log, (err, res) => {
+            next => this._fetchSourceMD(sourceEntry, log, (err, res) => {
                 if (err && err.code === 'ObjNotFound' &&
                     sourceEntry.getReplicationIsNFS() &&
                     !sourceEntry.getIsDeleteMarker()) {
@@ -1032,14 +1003,14 @@ class MultipleBackendTask extends ReplicateObject {
                 }
                 return next(null, res);
             }),
-            (refreshedEntry, next) => {
+            (sourceMD, next) => {
                 if (sourceEntry.getIsDeleteMarker()) {
                     return this._putDeleteMarker(sourceEntry, log, next);
                 }
-                const status = refreshedEntry.getReplicationSiteStatus(
+                const status = sourceMD.getReplicationSiteStatus(
                     this.site);
                 log.debug('refreshed entry site replication info', {
-                    entry: refreshedEntry.getLogInfo(),
+                    entry: sourceEntry.getLogInfo(),
                     site: this.site, siteStatus: status,
                     content,
                 });
@@ -1048,7 +1019,7 @@ class MultipleBackendTask extends ReplicateObject {
                           'replication status is already COMPLETED ' +
                           `on the location ${this.site}`;
                     log.warn(errMessage, {
-                        entry: refreshedEntry.getLogInfo(),
+                        entry: sourceEntry.getLogInfo(),
                     });
                     return next(errors.InvalidObjectState.customizeDescription(
                         errMessage));
