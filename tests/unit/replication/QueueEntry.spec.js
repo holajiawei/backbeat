@@ -84,14 +84,6 @@ describe('QueueEntry helper class', () => {
             const entry = QueueEntry.createFromKafkaEntry(replicationEntry);
             assert.strictEqual(entry.error, undefined);
             assert.strictEqual(entry.getOperationType(), undefined);
-            assert.strictEqual(entry.isReplicationOperation(), true);
-        });
-
-        it('should get a kafka entry operation type as lifecycle', () => {
-            const entry = QueueEntry.createFromKafkaEntry(replicationEntry);
-            assert.strictEqual(entry.error, undefined);
-            const lifecycleEntry = entry.toLifecycleEntry('a', 'b');
-            assert.strictEqual(lifecycleEntry.isLifecycleOperation(), true);
         });
 
         it('should set a lifecycle kafka entry replication storage class',

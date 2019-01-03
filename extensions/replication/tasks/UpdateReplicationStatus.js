@@ -85,9 +85,6 @@ class UpdateReplicationStatus extends BackbeatTask {
      * @return {undefined}
      */
     _reportMetrics(sourceEntry, updatedSourceEntry) {
-        if (!sourceEntry.isReplicationOperation()) {
-            return undefined;
-        }
         const content = updatedSourceEntry.getReplicationContent();
         const contentLength = updatedSourceEntry.getContentLength();
         const bytes = content.includes('DATA') ? contentLength : 0;
@@ -142,10 +139,6 @@ class UpdateReplicationStatus extends BackbeatTask {
     }
 
     _checkStatus(sourceEntry) {
-        // This check only applies to replication operations.
-        if (!sourceEntry.isReplicationOperation()) {
-            return undefined;
-        }
         const site = sourceEntry.getSite();
         const status = sourceEntry.getReplicationSiteStatus(site);
         const statuses = ['COMPLETED', 'FAILED', 'PENDING'];
@@ -186,13 +179,7 @@ class UpdateReplicationStatus extends BackbeatTask {
 
     _getUpdatedSourceEntry(params) {
         const { sourceEntry } = params;
-        if (sourceEntry.isReplicationOperation()) {
-            return this._getUpdatedReplicationEntry(params);
-        }
-        if (sourceEntry.isLifecycleOperation()) {
-            return this._getUpdatedLifecycleEntry(params);
-        }
-        return undefined;
+        return this._getUpdatedReplicationEntry(params);
     }
 
     _garbageCollectReplication(entry, cb) {
@@ -214,13 +201,7 @@ class UpdateReplicationStatus extends BackbeatTask {
     }
 
     _handleGarbageCollection(entry, cb) {
-        if (entry.isReplicationOperation()) {
-            return this._garbageCollectReplication(entry, cb);
-        }
-        if (entry.isLifecycleOperation()) {
-            return this._garbageCollectLifecycle(entry, cb);
-        }
-        return cb();
+        return this._garbageCollectReplication(entry, cb);
     }
 
     _putMetadata(updatedSourceEntry, log, cb) {
