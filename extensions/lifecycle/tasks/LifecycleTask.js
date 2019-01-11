@@ -5,9 +5,7 @@ const { errors } = require('arsenal');
 
 const { attachReqUids } = require('../../../lib/clients/utils');
 const BackbeatTask = require('../../../lib/tasks/BackbeatTask');
-const BackbeatMetadataProxy =
-    require('../../../lib/BackbeatMetadataProxy');
-const ObjectQueueEntry = require('../../../lib/models/ObjectQueueEntry');
+const ActionQueueEntry = require('../../../lib/models/ActionQueueEntry');
 
 // Default max AWS limit is 1000 for both list objects and list object versions
 const MAX_KEYS = process.env.CI === 'true' ? 3 : 1000;
@@ -32,6 +30,41 @@ class LifecycleTask extends BackbeatTask {
         const lpState = lp.getStateVars();
         super();
         Object.assign(this, lpState);
+    }
+
+    /**
+     * Send entry back to bucket task topic
+     * @param {Object} entry - The Kafka entry to send to the topic
+     * @param {Function} cb - The callback to call
+     * @return {undefined}
+     */
+    _sendBucketEntry(entry, cb) {
+        const entries = [{ message: JSON.stringify(entry) }];
+        this.producer.sendToTopic(this.bucketTasksTopic, entries, cb);
+    }
+
+    /**
+     * Send entry to the object task topic
+     * @param {ActionQueueEntry} entry - The action entry to send to the topic
+     * @param {Function} cb - The callback to call
+     * @return {undefined}
+     */
+    _sendObjectAction(entry, cb) {
+        const entries = [{ message: entry.toKafkaMessage() }];
+        this.producer.sendToTopic(this.objectTasksTopic, entries, cb);
+    }
+
+    /**
+     * Send entry to the data mover topic
+     * @param {ActionQueueEntry} entry - The action entry to send to the topic
+     * @param {Function} cb - The callback to call
+     * @return {undefined}
+     */
+    _sendDataMoverAction(entry, cb) {
+        const { bucket, key } = entry.getAttribute('target');
+        const entries = [{ key: `${bucket}/${key}`,
+                           message: entry.toKafkaMessage() }];
+        this.producer.sendToTopic(this.dataMoverTopic, entries, cb);
     }
 
     /**
@@ -77,7 +110,7 @@ class LifecycleTask extends BackbeatTask {
                     const entry = Object.assign({}, bucketData, {
                         details: { marker },
                     });
-                    this.sendBucketEntry(entry, err => {
+                    this._sendBucketEntry(entry, err => {
                         if (!err) {
                             log.debug(
                                 'sent kafka entry for bucket consumption', {
@@ -134,7 +167,7 @@ class LifecycleTask extends BackbeatTask {
                         prevDate: last.LastModified,
                     },
                 });
-                this.sendBucketEntry(entry, err => {
+                this._sendBucketEntry(entry, err => {
                     if (!err) {
                         log.debug('sent kafka entry for bucket ' +
                         'consumption', {
@@ -193,7 +226,7 @@ class LifecycleTask extends BackbeatTask {
                             uploadIdMarker: data.NextUploadIdMarker,
                         },
                     });
-                    return this.sendBucketEntry(entry, err => {
+                    return this._sendBucketEntry(entry, err => {
                         if (!err) {
                             log.debug(
                                 'sent kafka entry for bucket consumption', {
@@ -722,48 +755,46 @@ class LifecycleTask extends BackbeatTask {
             new Date(obj.LastModified));
 
         if (rules.Expiration.Date &&
-        rules.Expiration.Date < Date.now()) {
+            rules.Expiration.Date < Date.now()) {
             // expiration date passed for this object
-            const entry = {
-                action: 'deleteObject',
-                target: {
-                    owner: bucketData.target.owner,
-                    bucket: bucketData.target.bucket,
-                    key: obj.Key,
-                },
-                details: {
-                    lastModified: obj.LastModified,
-                },
-            };
-            this.sendObjectEntry(entry, err => {
+            const entry = ActionQueueEntry.create('deleteObject')
+                  .addContext({
+                      origin: 'lifecycle',
+                      ruleType: 'expiration',
+                      reqId: log.getSerializedUids(),
+                  })
+                  .setAttribute('target.owner', bucketData.target.owner)
+                  .setAttribute('target.bucket', bucketData.target.bucket)
+                  .setAttribute('target.key', obj.Key)
+                  .setAttribute('details.lastModified', obj.LastModified);
+            this._sendObjectAction(entry, err => {
                 if (!err) {
-                    log.debug('sent object entry for consumption', {
-                        method: 'LifecycleTask._compareObject',
-                        entry,
-                    });
+                    log.debug(
+                        'sent object entry for consumption', Object.assign({
+                            method: 'LifecycleTask._compareObject',
+                        }, entry.getLogInfo()));
                 }
             });
             return true;
         }
         if (rules.Expiration.Days !== undefined &&
         daysSinceInitiated >= rules.Expiration.Days) {
-            const entry = {
-                action: 'deleteObject',
-                target: {
-                    owner: bucketData.target.owner,
-                    bucket: bucketData.target.bucket,
-                    key: obj.Key,
-                },
-                details: {
-                    lastModified: obj.LastModified,
-                },
-            };
-            this.sendObjectEntry(entry, err => {
+            const entry = ActionQueueEntry.create('deleteObject')
+                  .addContext({
+                      origin: 'lifecycle',
+                      ruleType: 'expiration',
+                      reqId: log.getSerializedUids(),
+                  })
+                  .setAttribute('target.owner', bucketData.target.owner)
+                  .setAttribute('target.bucket', bucketData.target.bucket)
+                  .setAttribute('target.key', obj.Key)
+                  .setAttribute('details.lastModified', obj.LastModified);
+            this._sendObjectAction(entry, err => {
                 if (!err) {
-                    log.debug('sent object entry for consumption', {
-                        method: 'LifecycleTask._compareObject',
-                        entry,
-                    });
+                    log.debug(
+                        'sent object entry for consumption', Object.assign({
+                            method: 'LifecycleTask._compareObject',
+                        }, entry.getLogInfo()));
                 }
             });
             return true;
@@ -772,92 +803,43 @@ class LifecycleTask extends BackbeatTask {
     }
 
     /**
-     * Get object metadata from CloudServer.
+     * Gets the transition entry and sends it to the data mover topic,
+     * then gathers the result in the object tasks topic for execution
+     * by the lifecycle object processor to update object metadata.
+     *
      * @param {object} params - The function parameters
      * @param {string} params.bucket - The source bucket name
      * @param {string} params.objectKey - The object key name
      * @param {string} params.encodedVersionId - The object encoded version ID
-     * @param {Werelogs.Logger} log - Logger object
-     * @param {Function} cb - Callback with error or the parsed metadata
-     * @return {undefined}
-     */
-    _getObjectMetadata(params, log, cb) {
-        // FIXME create the proxy instance in LifecycleBucketProcessor
-        // and provide an HTTP agent
-        return new BackbeatMetadataProxy(this.s3Endpoint, this.s3Auth)
-            .setSourceClient(log)
-            .getMetadata(params, log, (err, res) => {
-                if (err) {
-                    log.error('could not retrieve object metadata', {
-                        method: 'LifecycleTask._getObjectMetadata',
-                        error: err,
-                    });
-                    return cb(err);
-                }
-                const metadata = JSON.parse(res.Body);
-                log.debug('retrieved object metadata', {
-                    method: 'LifecycleTask._getObjectMetadata',
-                    metadata,
-                });
-                return cb(null, metadata);
-            });
-    }
-
-    /**
-     * Get the source object metadata and build a Kafka entry for transitions.
-     * @param {object} params - The function parameters
-     * @param {string} params.bucket - The source bucket name
-     * @param {string} params.objectKey - The object key name
-     * @param {string} params.encodedVersionId - The object encoded version ID
-     * @param {string} params.site - The site name to transition the object to
-     * @param {Werelogs.Logger} log - Logger object
-     * @param {Function} cb - Callback to call with error or the Kafka entry
-     * @return {undefined}
-     */
-    _getTransitionEntry(params, log, cb) {
-        const { bucket, objectKey, encodedVersionId } = params;
-        const metadataParams = {
-            bucket,
-            objectKey,
-            encodedVersionId,
-        };
-        return this._getObjectMetadata(metadataParams, log, (err, metadata) => {
-            if (err) {
-                return cb(err);
-            }
-            const { site } = params;
-            const { type } = this.bootstrapList.find(i => site === i.site);
-            const entry = new ObjectQueueEntry(bucket, objectKey, metadata)
-                .toLifecycleEntry(site, type)
-                .toKafkaEntry(site);
-            return cb(null, entry);
-        });
-    }
-
-    /**
-     * Gets the transition entry and sends it to the replication topic.
-     * @param {object} params - The function parameters
-     * @param {string} params.bucket - The source bucket name
-     * @param {string} params.objectKey - The object key name
-     * @param {string} params.encodedVersionId - The object encoded version ID
+     * @param {string} params.contentMd5 - The object data MD5 hash
      * @param {string} params.site - The site name to transition the object to
      * @param {Werelogs.Logger} log - Logger object
      * @return {undefined}
      */
     _applyTransitionRule(params, log) {
-        return async.waterfall([
-            next => this._getTransitionEntry(params, log, next),
-            (entry, next) => this.sendTransitionEntry(entry, next),
-        ], err => {
+        const entry = ActionQueueEntry.create('copyLocation')
+              .setResultsTopic(this.objectTasksTopic)
+              .addContext({
+                  origin: 'lifecycle',
+                  ruleType: 'transition',
+                  reqId: log.getSerializedUids(),
+              })
+              .setAttribute('target.bucket', params.bucket)
+              .setAttribute('target.key', params.objectKey)
+              .setAttribute('target.version', params.encodedVersionId)
+              .setAttribute('target.contentMd5', params.contentMd5)
+              .setAttribute('toLocation', params.site);
+        this._sendDataMoverAction(entry, err => {
             if (err) {
-                log.error('could not send transition entry for consumption', {
-                    method: 'LifecycleTask._applyTransitionRule',
-                    error: err,
-                });
+                log.error('could not send transition entry for consumption',
+                          Object.assign({
+                              method: 'LifecycleTask._applyTransitionRule',
+                              error: err,
+                          }, entry.getLogInfo()));
             }
-            log.debug('sent transition entry for consumption', {
+            log.debug('sent transition entry for consumption', Object.assign({
                 method: 'LifecycleTask._applyTransitionRule',
-            });
+            }, entry.getLogInfo()));
         });
     }
 
@@ -927,21 +909,24 @@ class LifecycleTask extends BackbeatTask {
                 // explicitly set to false, apply and permanently delete this DM
                 if (matchingNoncurrentKeys.length === 0 && (applicableExpRule ||
                 validLifecycleUserCase)) {
-                    const entry = {
-                        action: 'deleteObject',
-                        target: {
-                            owner: bucketData.target.owner,
-                            bucket: bucketData.target.bucket,
-                            key: deleteMarker.Key,
-                            version: deleteMarker.VersionId,
-                        },
-                    };
-                    this.sendObjectEntry(entry, err => {
+                    const entry = ActionQueueEntry.create('deleteObject')
+                          .addContext({
+                              origin: 'lifecycle',
+                              ruleType: 'expiration',
+                              reqId: log.getSerializedUids(),
+                          })
+                          .setAttribute('target.owner', bucketData.target.owner)
+                          .setAttribute('target.bucket',
+                                        bucketData.target.bucket)
+                          .setAttribute('target.key', deleteMarker.Key)
+                          .setAttribute('target.version',
+                                        deleteMarker.VersionId);
+                    this._sendObjectAction(entry, err => {
                         if (!err) {
-                            log.debug('sent object entry for consumption', {
+                            log.debug('sent object entry for consumption',
+                            Object.assign({
                                 method: 'LifecycleTask._checkAndApplyEODMRule',
-                                entry,
-                            });
+                            }, entry.getLogInfo()));
                         }
                     });
                 }
@@ -969,22 +954,22 @@ class LifecycleTask extends BackbeatTask {
             rules[ncve][ncd] !== undefined &&
             daysSinceInitiated >= rules[ncve][ncd]);
         if (doesNCVExpirationRuleApply) {
-            const entry = {
-                action: 'deleteObject',
-                target: {
-                    owner: bucketData.target.owner,
-                    bucket: bucketData.target.bucket,
-                    key: version.Key,
-                    version: version.VersionId,
-                },
-            };
-            this.sendObjectEntry(entry, err => {
+            const entry = ActionQueueEntry.create('deleteObject')
+                  .addContext({
+                      origin: 'lifecycle',
+                      ruleType: 'expiration',
+                      reqId: log.getSerializedUids(),
+                  })
+                  .setAttribute('target.owner', bucketData.target.owner)
+                  .setAttribute('target.bucket', bucketData.target.bucket)
+                  .setAttribute('target.key', version.Key)
+                  .setAttribute('target.version', version.VersionId);
+            this._sendObjectAction(entry, err => {
                 if (!err) {
-                    log.debug('sent object entry for ' +
-                    'consumption', {
-                        method: 'LifecycleTask._compareVersion',
-                        entry,
-                    });
+                    log.debug('sent object entry for consumption',
+                        Object.assign({
+                            method: 'LifecycleTask._compareVersion',
+                        }, entry.getLogInfo()));
                 }
             });
         }
@@ -1038,6 +1023,8 @@ class LifecycleTask extends BackbeatTask {
                 this._applyTransitionRule({
                     bucket: bucketData.target.bucket,
                     objectKey: obj.Key,
+                    // XXX check this
+                    contentMd5: data.ETag.slice(1, 33),
                     site: rules.Transition.StorageClass,
                 }, log);
                 return done();
@@ -1143,6 +1130,7 @@ class LifecycleTask extends BackbeatTask {
             return done();
         }
         if (rules.Transition) {
+            // FIXME provide contentMd5 param
             this._applyTransitionRule({
                 bucket: bucketData.target.bucket,
                 objectKey: version.Key,
@@ -1200,23 +1188,22 @@ class LifecycleTask extends BackbeatTask {
                     method: 'LifecycleTask._compareMPUUploads',
                     uploadId: upload.UploadId,
                 });
-                const entry = {
-                    action: 'deleteMPU',
-                    target: {
-                        owner: bucketData.target.owner,
-                        bucket: bucketData.target.bucket,
-                        key: upload.Key,
-                    },
-                    details: {
-                        UploadId: upload.UploadId,
-                    },
-                };
-                this.sendObjectEntry(entry, err => {
+                const entry = ActionQueueEntry.create('deleteMPU')
+                      .addContext({
+                          origin: 'lifecycle',
+                          ruleType: 'expiration',
+                          reqId: log.getSerializedUids(),
+                      })
+                      .setAttribute('target.owner', bucketData.target.owner)
+                      .setAttribute('target.bucket', bucketData.target.bucket)
+                      .setAttribute('target.key', upload.Key)
+                      .setAttribute('details.UploadId', upload.UploadId);
+                this._sendObjectAction(entry, err => {
                     if (!err) {
-                        log.debug('sent object entry for consumption', {
-                            method: 'LifecycleTask._compareMPUUploads',
-                            entry,
-                        });
+                        log.debug('sent object entry for consumption',
+                            Object.assign({
+                                method: 'LifecycleTask._compareMPUUploads',
+                            }, entry.getLogInfo()));
                     }
                 });
             }
