@@ -15,17 +15,23 @@ const RoundRobin = require('arsenal').network.RoundRobin;
 const BackbeatProducer = require('../../../lib/BackbeatProducer');
 const BackbeatConsumer = require('../../../lib/BackbeatConsumer');
 const VaultClientCache = require('../../../lib/clients/VaultClientCache');
+const BackbeatClient = require('../../../lib/clients/BackbeatClient');
+const BackbeatMetadataProxy = require('../../../lib/BackbeatMetadataProxy');
 const QueueEntry = require('../../../lib/models/QueueEntry');
 const ReplicationTaskScheduler = require('../utils/ReplicationTaskScheduler');
 const getLocationsFromStorageClass =
     require('../utils/getLocationsFromStorageClass');
 const ReplicateObject = require('../tasks/ReplicateObject');
 const MultipleBackendTask = require('../tasks/MultipleBackendTask');
+const CopyLocationTask = require('../tasks/CopyLocationTask');
 const EchoBucket = require('../tasks/EchoBucket');
 
 const ObjectQueueEntry = require('../../../lib/models/ObjectQueueEntry');
 const BucketQueueEntry = require('../../../lib/models/BucketQueueEntry');
+const ActionQueueEntry = require('../../../lib/models/ActionQueueEntry');
 const MetricsProducer = require('../../../lib/MetricsProducer');
+const { getAccountCredentials } =
+          require('../../../lib/credentials/AccountCredentials');
 
 const {
     zookeeperReplicationNamespace,
@@ -106,6 +112,7 @@ class QueueProcessor extends EventEmitter {
         this.destAdminVaultConfigured = false;
         this.replicationStatusProducer = null;
         this._consumer = null;
+        this._dataMoverConsumer = null;
         this._mProducer = null;
         this.site = site;
         this.mConfig = mConfig;
@@ -140,6 +147,7 @@ class QueueProcessor extends EventEmitter {
 
         this._setupVaultclientCache();
         this._setupRedis(redisConfig);
+        this._setupClients();
 
         // FIXME support multiple scality destination sites
         if (Array.isArray(destConfig.bootstrapList)) {
@@ -264,6 +272,52 @@ class QueueProcessor extends EventEmitter {
         });
     }
 
+    _setupConsumer(topic, queueProcessorFunc, options) {
+        let consumerReady = false;
+        const groupId =
+              `${this.repConfig.queueProcessor.groupId}-${this.site}`;
+        const consumer = new BackbeatConsumer({
+            kafka: { hosts: this.kafkaConfig.hosts },
+            topic,
+            groupId,
+            concurrency: this.repConfig.queueProcessor.concurrency,
+            queueProcessor: queueProcessorFunc,
+        });
+        consumer.on('error', () => {
+            if (!consumerReady) {
+                this.logger.fatal('queue processor failed to start a ' +
+                                  'backbeat consumer');
+                process.exit(1);
+            }
+        });
+        consumer.on('ready', () => {
+            consumerReady = true;
+            const paused = options && options.paused;
+            consumer.subscribe(paused);
+        });
+        return consumer;
+    }
+
+    _setupClients() {
+        const s3Credentials =
+              getAccountCredentials(this.sourceConfig.auth, this.logger);
+
+        // Disable retries, use our own retry policy (mandatory for
+        // putData route in order to fetch data again from source).
+
+        const { transport, s3, auth } = this.sourceConfig;
+        this.backbeatClient = new BackbeatClient({
+            endpoint: `${transport}://${s3.host}:${s3.port}`,
+            credentials: s3Credentials,
+            sslEnabled: transport === 'https',
+            httpOptions: { agent: this.sourceHTTPAgent, timeout: 0 },
+            maxRetries: 0,
+        });
+        this.backbeatMetadataProxy = new BackbeatMetadataProxy(
+            `${transport}://${s3.host}:${s3.port}`, auth, this.sourceHTTPAgent);
+        this.backbeatMetadataProxy.setSourceClient(this.logger);
+    }
+
     _setupEcho() {
         if (!this.sourceAdminVaultConfigured) {
             throw new Error('echo mode not properly configured: missing ' +
@@ -344,6 +398,7 @@ class QueueProcessor extends EventEmitter {
                     });
                 } else {
                     this._consumer.pause(this.site);
+                    this._dataMoverConsumer.pause(this.site);
                     this.logger.info('paused replication for location: ' +
                         `${this.site}`);
                     this._deleteScheduledResumeService();
@@ -378,6 +433,7 @@ class QueueProcessor extends EventEmitter {
                     });
                 } else {
                     this._consumer.resume(this.site);
+                    this._dataMoverConsumer.resume(this.site);
                     this.logger.info('resumed replication for location: ' +
                         `${this.site}`);
                     this._deleteScheduledResumeService();
@@ -525,6 +581,9 @@ class QueueProcessor extends EventEmitter {
             logger: this.logger,
             site: this.site,
             consumer: this._consumer,
+            dataMoverConsumer: this._dataMoverConsumer,
+            backbeatClient: this.backbeatClient,
+            backbeatMetadataProxy: this.backbeatMetadataProxy,
         };
     }
 
@@ -551,7 +610,6 @@ class QueueProcessor extends EventEmitter {
                 process.exit(1);
             }
             return this._setupProducer(err => {
-                let consumerReady = false;
                 if (err) {
                     this.logger.info('error setting up kafka producer',
                                      { error: err.message });
@@ -561,27 +619,12 @@ class QueueProcessor extends EventEmitter {
                     this.emit('ready');
                     return undefined;
                 }
-                const groupId =
-                    `${this.repConfig.queueProcessor.groupId}-${this.site}`;
-                this._consumer = new BackbeatConsumer({
-                    kafka: { hosts: this.kafkaConfig.hosts },
-                    topic: this.repConfig.topic,
-                    groupId,
-                    concurrency: this.repConfig.queueProcessor.concurrency,
-                    queueProcessor: this.processKafkaEntry.bind(this),
-                });
-                this._consumer.on('error', () => {
-                    if (!consumerReady) {
-                        this.logger.fatal('queue processor failed to start a ' +
-                                       'backbeat consumer');
-                        process.exit(1);
-                    }
-                });
-                this._consumer.on('ready', () => {
-                    consumerReady = true;
-                    const paused = options && options.paused;
-                    this._consumer.subscribe(paused);
-                });
+                this._consumer = this._setupConsumer(
+                    this.repConfig.topic,
+                    this.processReplicationEntry.bind(this), options);
+                this._dataMoverConsumer = this._setupConsumer(
+                    this.repConfig.dataMoverTopic,
+                    this.processDataMoverEntry.bind(this), options);
                 this._consumer.on('canary', () => {
                     this.logger.info('queue processor is ready to consume ' +
                                      'replication entries');
@@ -620,16 +663,26 @@ class QueueProcessor extends EventEmitter {
      * @return {undefined}
      */
     stop(done) {
-        if (!this.replicationStatusProducer) {
-            return setImmediate(done);
-        }
-        return this.replicationStatusProducer.close(() => {
-            if (this._consumer) {
-                this._consumer.close(done);
-            } else {
-                done();
-            }
-        });
+        async.series([
+            next => {
+                if (this.replicationStatusProducer) {
+                    return this.replicationStatusProducer.close(next);
+                }
+                return next();
+            },
+            next => {
+                if (this._consumer) {
+                    return this._consumer.close(next);
+                }
+                return next();
+            },
+            next => {
+                if (this._dataMoverConsumer) {
+                    return this._dataMoverConsumer.close(next);
+                }
+                return next();
+            },
+        ], done);
     }
 
     /**
@@ -642,10 +695,10 @@ class QueueProcessor extends EventEmitter {
      * @param {function} done - callback function
      * @return {undefined}
      */
-    processKafkaEntry(kafkaEntry, done) {
+    processReplicationEntry(kafkaEntry, done) {
         const sourceEntry = QueueEntry.createFromKafkaEntry(kafkaEntry);
         if (sourceEntry.error) {
-            this.logger.error('error processing source entry',
+            this.logger.error('error processing replication entry',
                               { error: sourceEntry.error });
             return process.nextTick(() => done(errors.InternalError));
         }
@@ -675,15 +728,64 @@ class QueueProcessor extends EventEmitter {
             }
         }
         if (task) {
-            this.logger.debug('source entry is being pushed',
+            this.logger.debug('replication entry is being pushed',
               { entry: sourceEntry.getLogInfo() });
             return this.taskScheduler.push({ task, entry: sourceEntry,
                                              kafkaEntry },
                                            sourceEntry.getCanonicalKey(),
                                            done);
         }
-        this.logger.debug('skip source entry',
+        this.logger.debug('skip replication entry',
                           { entry: sourceEntry.getLogInfo() });
+        return process.nextTick(done);
+    }
+
+    /**
+     * Process an action entry from the data mover topic
+     *
+     * @param {object} kafkaEntry - action entry generated by client services
+     * @param {string} kafkaEntry.key - kafka entry key
+     * @param {string} kafkaEntry.value - kafka entry value
+     * @param {function} done - callback function
+     * @return {undefined}
+     */
+    processDataMoverEntry(kafkaEntry, done) {
+        const actionEntry = ActionQueueEntry.createFromKafkaEntry(kafkaEntry);
+        if (actionEntry.error) {
+            this.logger.error('error processing source entry',
+                              { error: actionEntry.error,
+                                entry: kafkaEntry.value });
+            return process.nextTick(() => done(errors.InternalError));
+        }
+        if (actionEntry.skip) {
+            // skip message, noop
+            return process.nextTick(done);
+        }
+        let task;
+        let canonicalKey;
+        if (actionEntry.getActionType() === 'copyLocation') {
+            if (actionEntry.getAttribute('toLocation') === this.site) {
+                task = new CopyLocationTask(this);
+                const { bucket, key } = actionEntry.getAttribute('target');
+                canonicalKey = `${bucket}/${key}`;
+            }
+        } else {
+            this.logger.warn('skipping unsupported action type', {
+                method: 'QueueProcessor.processDataMoverEntry',
+                entry: actionEntry.getLogInfo(),
+            });
+        }
+        if (task) {
+            this.logger.debug('data mover entry is being pushed', {
+                entry: actionEntry.getLogInfo(),
+            });
+            return this.taskScheduler.push({ task, entry: actionEntry,
+                                             kafkaEntry },
+                                           canonicalKey, done);
+        }
+        this.logger.debug('skip data mover entry', {
+            entry: actionEntry.getLogInfo(),
+        });
         return process.nextTick(done);
     }
 
