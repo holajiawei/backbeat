@@ -15,6 +15,8 @@ const RoundRobin = require('arsenal').network.RoundRobin;
 const BackbeatProducer = require('../../../lib/BackbeatProducer');
 const BackbeatConsumer = require('../../../lib/BackbeatConsumer');
 const VaultClientCache = require('../../../lib/clients/VaultClientCache');
+const BackbeatClient = require('../../../lib/clients/BackbeatClient');
+const BackbeatMetadataProxy = require('../../../lib/BackbeatMetadataProxy');
 const QueueEntry = require('../../../lib/models/QueueEntry');
 const ReplicationTaskScheduler = require('../utils/ReplicationTaskScheduler');
 const getLocationsFromStorageClass =
@@ -28,6 +30,8 @@ const ObjectQueueEntry = require('../../../lib/models/ObjectQueueEntry');
 const BucketQueueEntry = require('../../../lib/models/BucketQueueEntry');
 const ActionQueueEntry = require('../../../lib/models/ActionQueueEntry');
 const MetricsProducer = require('../../../lib/MetricsProducer');
+const { getAccountCredentials } =
+          require('../../../lib/credentials/AccountCredentials');
 
 const {
     zookeeperReplicationNamespace,
@@ -143,6 +147,7 @@ class QueueProcessor extends EventEmitter {
 
         this._setupVaultclientCache();
         this._setupRedis(redisConfig);
+        this._setupClients();
 
         // FIXME support multiple scality destination sites
         if (Array.isArray(destConfig.bootstrapList)) {
@@ -292,6 +297,26 @@ class QueueProcessor extends EventEmitter {
             consumer.subscribe(paused);
         });
         return consumer;
+    }
+
+    _setupClients() {
+        const s3Credentials =
+              getAccountCredentials(this.sourceConfig.auth, this.logger);
+
+        // Disable retries, use our own retry policy (mandatory for
+        // putData route in order to fetch data again from source).
+
+        const { transport, s3, auth } = this.sourceConfig;
+        this.backbeatClient = new BackbeatClient({
+            endpoint: `${transport}://${s3.host}:${s3.port}`,
+            credentials: s3Credentials,
+            sslEnabled: transport === 'https',
+            httpOptions: { agent: this.sourceHTTPAgent, timeout: 0 },
+            maxRetries: 0,
+        });
+        this.backbeatMetadataProxy = new BackbeatMetadataProxy(
+            `${transport}://${s3.host}:${s3.port}`, auth, this.sourceHTTPAgent);
+        this.backbeatMetadataProxy.setSourceClient(this.logger);
     }
 
     _setupEcho() {
