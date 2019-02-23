@@ -811,7 +811,7 @@ class LifecycleTask extends BackbeatTask {
      * @param {string} params.bucket - The source bucket name
      * @param {string} params.objectKey - The object key name
      * @param {string} params.encodedVersionId - The object encoded version ID
-     * @param {string} params.contentMd5 - The object data MD5 hash
+     * @param {string} params.eTag - The object data ETag
      * @param {string} params.site - The site name to transition the object to
      * @param {Werelogs.Logger} log - Logger object
      * @return {undefined}
@@ -827,7 +827,7 @@ class LifecycleTask extends BackbeatTask {
               .setAttribute('target.bucket', params.bucket)
               .setAttribute('target.key', params.objectKey)
               .setAttribute('target.version', params.encodedVersionId)
-              .setAttribute('target.contentMd5', params.contentMd5)
+              .setAttribute('target.eTag', params.eTag)
               .setAttribute('toLocation', params.site);
         this._sendDataMoverAction(entry, err => {
             if (err) {
@@ -1023,8 +1023,7 @@ class LifecycleTask extends BackbeatTask {
                 this._applyTransitionRule({
                     bucket: bucketData.target.bucket,
                     objectKey: obj.Key,
-                    // XXX check this
-                    contentMd5: data.ETag.slice(1, 33),
+                    eTag: obj.ETag,
                     site: rules.Transition.StorageClass,
                 }, log);
                 return done();
@@ -1130,10 +1129,10 @@ class LifecycleTask extends BackbeatTask {
             return done();
         }
         if (rules.Transition) {
-            // FIXME provide contentMd5 param
             this._applyTransitionRule({
                 bucket: bucketData.target.bucket,
                 objectKey: version.Key,
+                eTag: version.ETag,
                 site: rules.Transition.StorageClass,
                 encodedVersionId: undefined,
             }, log);
