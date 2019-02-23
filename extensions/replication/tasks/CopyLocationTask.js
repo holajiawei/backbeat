@@ -352,7 +352,7 @@ class CopyLocationTask extends BackbeatTask {
         let sourceReq = null;
         const { bucket, key, version } = actionEntry.getAttribute('target');
         if (size !== 0) {
-            sourceReq = this.backbeatSource.getObject({
+            sourceReq = this.backbeatClient.getObject({
                 Bucket: bucket,
                 Key: key,
                 VersionId: version,
@@ -402,7 +402,7 @@ class CopyLocationTask extends BackbeatTask {
             uploadId,
         }, actionEntry.getLogInfo()));
         const { bucket, key } = actionEntry.getAttribute('target');
-        const destReq = this.backbeatSource.multipleBackendAbortMPU({
+        const destReq = this.backbeatClient.multipleBackendAbortMPU({
             Bucket: bucket,
             Key: key,
             StorageType: this.destType,
@@ -434,7 +434,7 @@ class CopyLocationTask extends BackbeatTask {
     */
     _completeMPU(actionEntry, objMD, uploadId, data, log, doneOnce) {
         const { bucket, key, version } = actionEntry.getAttribute('target');
-        const destReq = this.backbeatSource.multipleBackendCompleteMPU({
+        const destReq = this.backbeatClient.multipleBackendCompleteMPU({
             Bucket: bucket,
             Key: key,
             StorageType: this.destType,
@@ -517,7 +517,7 @@ class CopyLocationTask extends BackbeatTask {
         }
 
         const { bucket, key } = actionEntry.getAttribute('target');
-        const destReq = this.backbeatSource.multipleBackendPutMPUPart({
+        const destReq = this.backbeatClient.multipleBackendPutMPUPart({
             Bucket: bucket,
             Key: key,
             ContentLength: size,
@@ -562,7 +562,7 @@ class CopyLocationTask extends BackbeatTask {
             return setImmediate(() => cb(null, uploadId));
         }
         const { bucket, key, version } = actionEntry.getAttribute('target');
-        const destReq = this.backbeatSource.multipleBackendInitiateMPU({
+        const destReq = this.backbeatClient.multipleBackendInitiateMPU({
             Bucket: bucket,
             Key: key,
             StorageType: this.destType,
