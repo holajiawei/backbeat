@@ -116,7 +116,7 @@ class CopyLocationTask extends BackbeatTask {
                 if (err && err.code === 'ObjNotFound') {
                     // The object was deleted before entry is processed, we
                     // can safely skip this entry.
-                    return next(errors.InvalidObjectState);
+                    return next(errors.NotFound);
                 }
                 if (err) {
                     return next(err);
@@ -124,8 +124,9 @@ class CopyLocationTask extends BackbeatTask {
                 return next(null, objMD);
             }),
             (objMD, next) => {
-                if (!this._checkObjectState(actionEntry, objMD, log)) {
-                    return next(errors.InvalidObjectState);
+                const err = this._checkObjectState(actionEntry, objMD, log);
+                if (err) {
+                    return next(err);
                 }
                 // Do a multipart upload when either the size is above
                 // a threshold or the source object is itself a MPU.
@@ -740,16 +741,22 @@ class CopyLocationTask extends BackbeatTask {
      * the same as in the action entry.
      * @param {ActionQueueEntry} actionEntry - the action entry
      * @param {ObjectMD} objMD - metadata object
-     * @return {boolean} - true if the check passes, false if not
+
+     * @return {null|Error} - null if the check passes, or an error
+     * object of type InvalidObjectState describing the check failure.
      */
     _checkObjectState(actionEntry, objMD) {
-        if (objMD.getContentMd5() !==
-            actionEntry.getAttribute('target.contentMd5')) {
-            // The object was overwritten with new contents since the
-            // action was initiated
-            return false;
+        const eTag = actionEntry.getAttribute('target.eTag');
+        if (eTag) {
+            const strippedETag = eTag.slice(1, -1);
+            if (objMD.getContentMd5() !== strippedETag) {
+                // The object was overwritten with new contents since
+                // the action was initiated
+                return errors.InvalidObjectState.customizeDescription(
+                    "object contents have changed");
+            }
         }
-        return true;
+        return null;
     }
 
     _publishCopyLocationStatus(err, actionEntry, kafkaEntry, log, done) {
