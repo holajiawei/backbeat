@@ -2,6 +2,7 @@
 
 const async = require('async');
 const { errors } = require('arsenal');
+const ObjectMD = require('arsenal').models.ObjectMD;
 
 const { attachReqUids } = require('../../../lib/clients/utils');
 const BackbeatTask = require('../../../lib/tasks/BackbeatTask');
@@ -830,7 +831,11 @@ class LifecycleTask extends BackbeatTask {
               .setAttribute('target.version', params.encodedVersionId)
               .setAttribute('target.eTag', params.eTag)
               .setAttribute('target.lastModified', params.lastModified)
-              .setAttribute('toLocation', params.site);
+              .setAttribute('toLocation', params.site)
+              .setAttribute('sourceObject.bucket', params.bucket)
+              .setAttribute('sourceObject.key', params.objectKey)
+              .setAttribute('sourceObject.storageClass', params.storageClass)
+              .setAttribute('sourceObject.lastModified', params.cloudObjectLastModified);
 
         this._sendDataMoverAction(entry, err => {
             if (err) {
@@ -977,6 +982,18 @@ class LifecycleTask extends BackbeatTask {
             });
         }
     }
+    
+    _getCloudObjectLastModified(params, log, done) {
+        console.log('HEAD OBJECT REQUEST PARAMS:', params);
+        this.backbeatMetadataProxy.headObject(params, log, (err, data) => {
+            console.log('HEAD OBJECT REQUEST RESPONSE:', {err, data});
+            if (err) {
+                log.error('error getting head response from CloudServer');
+                return done(err); // TODO: Add this check?
+            }
+            return done(null, data.lastModified);
+        });
+    }
 
     /**
      * Compare a non-versioned object to most applicable rules
@@ -990,51 +1007,86 @@ class LifecycleTask extends BackbeatTask {
      */
     _compareObject(bucketData, obj, rules, log, done) {
         const params = {
-            Bucket: bucketData.target.bucket,
-            Key: obj.Key,
+            bucket: bucketData.target.bucket,
+            objectKey: obj.Key,
+            versionId: obj.VersionId, // Used by `IsLatest` version
         };
-        // Used by `IsLatest` version
-        if (obj.VersionId) {
-            params.VersionId = obj.VersionId;
-        }
-        const req = this.s3target.headObject(params);
-        // GET CLOUD HEAD OBJECT HERE, pass in sourceObject.
-        attachReqUids(req, log);
-        return req.send((err, data) => {
-            if (err) {
-                log.error('failed to get object', {
-                    method: 'LifecycleTask._compareObject',
-                    error: err,
-                    bucket: bucketData.target.bucket,
-                    objectKey: obj.Key,
+        this.backbeatMetadataProxy
+            .getMetadata(params, log, (err, blob) => {
+                if (err) {
+                    log.error('failed to get object metadata', {
+                        method: 'LifecycleTask._compareObject',
+                        error: err,
+                        bucket: params.bucket,
+                        objectKey: params.objectKey,
+                    });
+                    return done(err);
+                }
+                const objMD = ObjectMD.createFromBlob(blob.Body);
+                const storageClass = objMD.getDataStoreName();
+                const isExternalCloudSource = storageClass === 'aws-backend';
+                console.log({ isExternalCloudSource });
+                if (!isExternalCloudSource) {
+                    const object = {
+                        Key: objMD.getKey(),
+                        LastModified: objMD.getLastModified(),
+                    };
+                    // There is an order of importance in cases of conflicts
+                    // Expiration and NoncurrentVersionExpiration should be priority
+                    // AbortIncompleteMultipartUpload should run regardless since
+                    // it's in its own category
+                    if (rules.Expiration) {
+                        this._checkAndApplyExpirationRule(
+                            bucketData, object, rules, log);
+                        return done();
+                    }
+                    if (rules.Transition) {
+                        this._applyTransitionRule({
+                            bucket: bucketData.target.bucket,
+                            objectKey: obj.Key,
+                            eTag: obj.ETag,
+                            lastModified: obj.LastModified,
+                            site: rules.Transition.StorageClass,
+                        }, log);
+                        return done();
+                    }
+                    return done();
+                }
+                return this._getCloudObjectLastModified({
+                    bucket: params.bucket,
+                    key: params.objectKey,
+                    storageClass,
+                }, log, (err, cloudObjectLastModified) => {
+                    console.log({ err, cloudObjectLastModified });
+                    if (err) {
+                        return done(err);
+                    }
+                    // There is an order of importance in cases of conflicts
+                    // Expiration and NoncurrentVersionExpiration should be priority
+                    // AbortIncompleteMultipartUpload should run regardless since
+                    // it's in its own category
+                    if (rules.Expiration) {
+                        this._checkAndApplyExpirationRule(
+                            bucketData, {
+                                Key: objMD.getKey(),
+                                LastModified: objMD.getLastModified(),
+                            }, rules, log);
+                        return done();
+                    }
+                    if (rules.Transition) {
+                        this._applyTransitionRule({
+                            bucket: bucketData.target.bucket,
+                            objectKey: obj.Key,
+                            eTag: obj.ETag,
+                            lastModified: objMD.getLastModified(),
+                            cloudObjectLastModified,
+                            storageClass,
+                            site: rules.Transition.StorageClass,
+                        }, log);
+                        return done();
+                    }
+                    return done();
                 });
-                return done(err);
-            }
-
-            const object = Object.assign({}, obj,
-                { LastModified: data.LastModified });
-
-            // There is an order of importance in cases of conflicts
-            // Expiration and NoncurrentVersionExpiration should be priority
-            // AbortIncompleteMultipartUpload should run regardless since
-            // it's in its own category
-            if (rules.Expiration) {
-                this._checkAndApplyExpirationRule(bucketData, object, rules,
-                    log);
-                return done();
-            }
-            if (rules.Transition) {
-                this._applyTransitionRule({
-                    bucket: bucketData.target.bucket,
-                    objectKey: obj.Key,
-                    eTag: obj.ETag,
-                    lastModified: obj.LastModified,
-                    site: rules.Transition.StorageClass,
-                }, log);
-                return done();
-            }
-
-            return done();
         });
     }
 
@@ -1238,10 +1290,13 @@ class LifecycleTask extends BackbeatTask {
      * @param {function} done - callback(error)
      * @return {undefined}
      */
-    processBucketEntry(bucketLCRules, bucketData, s3target, done) {
+    processBucketEntry(bucketLCRules, bucketData, s3target, backbeatMetadataProxy, done) {
         const log = this.log.newRequestLogger();
         this.s3target = s3target;
-
+        this.backbeatMetadataProxy = backbeatMetadataProxy;
+        if (!this.backbeatMetadataProxy) {
+            return process.nextTick(done);
+        }
         if (!this.s3target) {
             return process.nextTick(done);
         }

@@ -165,15 +165,15 @@ class LifecycleUpdateTransitionTask extends BackbeatTask {
             let locationToGC;
             return async.waterfall([
                 next => this._getMetadata(entry, log, next),
-                (objMD, next) => {
-                    const storageClass = objMD.getDataStoreName();
-                    const isExternalCloudSource = storageClass === 'aws-backend';
-                    console.log({ isExternalCloudSource });
-                    if (isExternalCloudSource) {
-                        return this._getCloudMetadata(entry, objMD, log, next);
-                    }
-                    return next(null, objMD);
-                },
+                // (objMD, next) => {
+                //     const storageClass = objMD.getDataStoreName();
+                //     const isExternalCloudSource = storageClass === 'aws-backend';
+                //     console.log({ isExternalCloudSource });
+                //     if (isExternalCloudSource) {
+                //         return this._getCloudMetadata(entry, objMD, log, next);
+                //     }
+                //     return next(null, objMD);
+                // },
                 (objMD, next) => {
                     const oldLocation = objMD.getLocation();
                     const newLocation = entry.getAttribute('results.location');
