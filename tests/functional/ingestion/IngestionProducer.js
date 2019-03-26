@@ -9,6 +9,7 @@ const IngestionProducer =
     require('../../../lib/queuePopulator/IngestionProducer');
 const { setupS3Mock, emptyAndDeleteVersionedBucket } = require('./S3Mock');
 const testConfig = require('../../config.json');
+const dummyLogger = require('../../utils/DummyLogger');
 
 const sourceConfig = testConfig.extensions.ingestion.sources[0];
 
@@ -53,6 +54,14 @@ describe('ingestion producer tests with mock', () => {
             assert.ifError(err);
             assert(res);
             assert.strictEqual(res.length, 2);
+            return done();
+        });
+    });
+
+    it('should validate the ingestion bucket has been accurately setup',
+        done => {
+        this.iProducer.validateRemoteAccess(bucket, dummyLogger, err => {
+            assert.ifError(err);
             return done();
         });
     });
