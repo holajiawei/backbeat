@@ -2,6 +2,7 @@
 
 const async = require('async');
 const { errors } = require('arsenal');
+const ObjectMD = require('arsenal').models.ObjectMD;
 
 const { attachReqUids } = require('../../../lib/clients/utils');
 const BackbeatTask = require('../../../lib/tasks/BackbeatTask');
@@ -802,6 +803,62 @@ class LifecycleTask extends BackbeatTask {
         return false;
     }
 
+    _getObjectMD(params, log, cb) {
+        this.backbeatMetadataProxy.getMetadata(params, log, (err, blob) => {
+            if (err) {
+                log.error('failed to get object metadata', {
+                    method: 'LifecycleTask._getObjectMD',
+                    error: err,
+                    bucket: params.bucket,
+                    objectKey: params.objectKey,
+                });
+                return cb(err);
+            }
+            const { error, result } = ObjectMD.createFromBlob(blob.Body);
+            if (error) {
+                const msg = 'error parsing metadata blob';
+                return cb(errors.InternalError.customizeDescription(msg));
+            }
+            return cb(null, result);
+        });
+    }
+
+    _getTransitionActionEntry(params, objectMD, log, cb) {
+        const entry = ActionQueueEntry.create('copyLocation')
+            .setResultsTopic(this.objectTasksTopic)
+            .addContext({
+                origin: 'lifecycle',
+                ruleType: 'transition',
+                reqId: log.getSerializedUids(),
+            })
+            .setAttribute('target.bucket', params.bucket)
+            .setAttribute('target.key', params.objectKey)
+            .setAttribute('target.version', params.encodedVersionId)
+            .setAttribute('target.eTag', params.eTag)
+            .setAttribute('target.lastModified', params.lastModified)
+            .setAttribute('toLocation', params.site);
+
+        const storageClass = objectMD.getDataStoreName();
+        const isExternalBackend = storageClass === 'aws-backend';
+        console.log({ isExternalBackend });
+        if (!isExternalBackend) {
+            return cb(null, entry);
+        }
+        return this._getCloudObjectLastModified(params, storageClass, log,
+            (err, lastModified) => {
+                if (err) {
+                    return cb(err);
+                }
+                entry.setAttribute('sourceObject', {
+                    bucket: params.bucket,
+                    objectKey: params.objectKey,
+                    storageClass,
+                    lastModified,
+                });
+                return cb(null, entry);
+        });
+    }
+
     /**
      * Gets the transition entry and sends it to the data mover topic,
      * then gathers the result in the object tasks topic for execution
@@ -818,31 +875,18 @@ class LifecycleTask extends BackbeatTask {
      * @return {undefined}
      */
     _applyTransitionRule(params, log) {
-        const entry = ActionQueueEntry.create('copyLocation')
-              .setResultsTopic(this.objectTasksTopic)
-              .addContext({
-                  origin: 'lifecycle',
-                  ruleType: 'transition',
-                  reqId: log.getSerializedUids(),
-              })
-              .setAttribute('target.bucket', params.bucket)
-              .setAttribute('target.key', params.objectKey)
-              .setAttribute('target.version', params.encodedVersionId)
-              .setAttribute('target.eTag', params.eTag)
-              .setAttribute('target.lastModified', params.lastModified)
-              .setAttribute('toLocation', params.site);
-
-        this._sendDataMoverAction(entry, err => {
+        async.waterfall([
+            next =>
+                this._getObjectMD(params, log, next),
+            (objectMD, next) =>
+                this._getTransitionActionEntry(params, objectMD, log, next),
+            (entry, next) =>
+                this._sendDataMoverAction(entry, next),
+        ], err => {
             if (err) {
-                log.error('could not send transition entry for consumption',
-                          Object.assign({
-                              method: 'LifecycleTask._applyTransitionRule',
-                              error: err,
-                          }, entry.getLogInfo()));
+                log.error('could not apply transition rule');
             }
-            log.debug('sent transition entry for consumption', Object.assign({
-                method: 'LifecycleTask._applyTransitionRule',
-            }, entry.getLogInfo()));
+            log.debug('transition rule applied');
         });
     }
 
@@ -976,6 +1020,22 @@ class LifecycleTask extends BackbeatTask {
                 }
             });
         }
+    }
+
+    _getCloudObjectLastModified(params, storageClass, log, cb) {
+        const headObjectParams = {
+            bucket: params.bucket,
+            objectKey: params.objectKey,
+            storageClass,
+        };
+        this.backbeatMetadataProxy
+            .headObject(headObjectParams, log, (err, data) => {
+                if (err) {
+                    log.error('error getting head response from CloudServer');
+                    return cb(err);
+                }
+                return cb(null, data.lastModified);
+            });
     }
 
     /**
@@ -1234,13 +1294,18 @@ class LifecycleTask extends BackbeatTask {
      * @param {string} [bucketData.details.objectName] - used specifically for
      *   handling versioned buckets
      * @param {AWS.S3} s3target - s3 instance
+     * @param {BackbeatClient} backbeatMetadataProxy - The metadata proxy
      * @param {function} done - callback(error)
      * @return {undefined}
      */
-    processBucketEntry(bucketLCRules, bucketData, s3target, done) {
+    processBucketEntry(bucketLCRules, bucketData, s3target,
+    backbeatMetadataProxy, done) {
         const log = this.log.newRequestLogger();
         this.s3target = s3target;
-
+        this.backbeatMetadataProxy = backbeatMetadataProxy;
+        if (!this.backbeatMetadataProxy) {
+            return process.nextTick(done);
+        }
         if (!this.s3target) {
             return process.nextTick(done);
         }

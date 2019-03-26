@@ -206,6 +206,46 @@
                 }
             }
         },
+        "MultipleBackendHeadObject": {
+            "http": {
+                "method": "GET",
+                "requestUri": "/_/backbeat/multiplebackendmetadata/{Bucket}/{Key+}"
+            },
+            "input": {
+                "type": "structure",
+                "required": [
+                    "Bucket",
+                    "Key",
+                    "StorageClass"
+                ],
+                "members": {
+                    "Bucket": {
+                        "location": "uri",
+                        "locationName": "Bucket"
+                    },
+                    "Key": {
+                        "location": "uri",
+                        "locationName": "Key"
+                    },
+                    "StorageClass": {
+                        "location": "header",
+                        "locationName": "X-Scal-Storage-Class"
+                    },
+                    "Body": {
+                        "type": "blob"
+                    }
+                },
+                "payload": "Body"
+            },
+            "output": {
+                "type": "structure",
+                "members": {
+                    "lastModified": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
         "MultipleBackendPutMPUPart": {
             "http": {
                 "method": "PUT",
@@ -904,6 +944,11 @@
                 "required": [
                 ],
                 "members": {
+                    "IfUnmodifiedSince": {
+                        "location": "header",
+                        "locationName": "If-Unmodified-Since",
+                        "type": "string"
+                    },
                     "ContentType": {
                         "location": "header",
                         "locationName": "X-Scal-Content-Type"
