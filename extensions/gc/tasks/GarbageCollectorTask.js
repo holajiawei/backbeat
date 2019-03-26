@@ -34,10 +34,30 @@ class GarbageCollectorTask extends BackbeatTask {
         });
     }
 
+    _checkDate(entry, log, done) {
+        // TODO: Move this check to batch deletion.
+        const { bucket, key, versionId, lastModified } =
+            entry.getAttribute('targetObject');
+        if (lastModified) {
+            const reqParams = {
+                Bucket: bucket,
+                Key: key,
+                VersionId: versionId,
+                IfUnmodifiedSince: lastModified,
+            };
+            const req = this.s3Client.headObject(reqParams);
+            attachReqUids(req, log);
+            return req.send(done);
+        }
+        return done();
+    }
+
     _executeDeleteData(entry, log, done) {
         log.debug('action execution starts', entry.getLogInfo());
         const locations = entry.getAttribute('target.locations');
+        console.log('_executeDeleteData sourceObject', entry.getAttribute('sourceObject'));
         const req = this._backbeatClient.batchDelete({
+            LastModified: entry.getAttribute('sourceObject.lastModified'),
             Locations: locations.map(location => ({
                 key: location.key,
                 dataStoreName: location.dataStoreName,

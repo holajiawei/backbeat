@@ -998,6 +998,7 @@ class LifecycleTask extends BackbeatTask {
             params.VersionId = obj.VersionId;
         }
         const req = this.s3target.headObject(params);
+        // GET CLOUD HEAD OBJECT HERE, pass in sourceObject.
         attachReqUids(req, log);
         return req.send((err, data) => {
             if (err) {

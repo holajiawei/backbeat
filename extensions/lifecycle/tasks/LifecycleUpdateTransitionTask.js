@@ -19,6 +19,34 @@ class LifecycleUpdateTransitionTask extends BackbeatTask {
         super();
         Object.assign(this, procState);
     }
+    
+    _getCloudMetadata(entry, objMD, log, done) {
+        const { bucket, key } = entry.getAttribute('target');
+        const storageClass = objMD.getDataStoreName();
+        const params = {
+            bucket,
+            key,
+            storageClass,
+        };
+        console.log('HEAD OBJECT REQUEST PARAMS:', params);
+        this.backbeatClient.headObject(params, log, (err, data) => {
+            console.log('HEAD OBJECT REQUEST RESPONSE:', {err, data});
+            if (err) {
+                log.error('error getting head response from CloudServer',
+                    Object.assign({
+                        method: 'LifecycleUpdateTransitionTask._getCloudMetadata',
+                        error: err.message,
+                    }, entry.getLogInfo()));
+                return done(null, objMD); // TODO: Add this check?
+            }
+            entry
+                .setAttribute('sourceObject.bucket', bucket)
+                .setAttribute('sourceObject.key', key)
+                .setAttribute('sourceObject.storageClass', storageClass)
+                .setAttribute('sourceObject.lastModified', data.lastModified);
+            return done(null, objMD);
+        });
+    }
 
     _getMetadata(entry, log, done) {
         const { bucket, key, version } = entry.getAttribute('target');
@@ -94,7 +122,10 @@ class LifecycleUpdateTransitionTask extends BackbeatTask {
                   versionId: version,
                   eTag,
               })
+              .setAttribute('sourceObject', entry.getAttribute('sourceObject'))
               .setAttribute('target.locations', locations);
+             
+        console.log('gcEntry.getAttr', gcEntry.getAttribute('sourceObject'));
         this.gcProducer.publishActionEntry(gcEntry, done);
     }
 
@@ -134,6 +165,15 @@ class LifecycleUpdateTransitionTask extends BackbeatTask {
             let locationToGC;
             return async.waterfall([
                 next => this._getMetadata(entry, log, next),
+                (objMD, next) => {
+                    const storageClass = objMD.getDataStoreName();
+                    const isExternalCloudSource = storageClass === 'aws-backend';
+                    console.log({ isExternalCloudSource });
+                    if (isExternalCloudSource) {
+                        return this._getCloudMetadata(entry, objMD, log, next);
+                    }
+                    return next(null, objMD);
+                },
                 (objMD, next) => {
                     const oldLocation = objMD.getLocation();
                     const newLocation = entry.getAttribute('results.location');
