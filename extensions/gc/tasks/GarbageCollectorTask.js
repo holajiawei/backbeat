@@ -44,7 +44,7 @@ class GarbageCollectorTask extends BackbeatTask {
             Key: entry.getAttribute('sourceObject.objectKey'),
             IfUnmodifiedSince: entry.getAttribute('sourceObject.lastModified'),
             StorageClass: entry.getAttribute('sourceObject.storageClass'),
-            Tags: JSON.stringify({ 'scal-transition-delete-marker': true }),
+            Tags: JSON.stringify({ 'scal-transition-delete-marker': 'true' }),
             Locations: locations.map(location => ({
                 key: location.key,
                 dataStoreName: location.dataStoreName,
