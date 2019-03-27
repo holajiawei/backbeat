@@ -1023,13 +1023,13 @@ class LifecycleTask extends BackbeatTask {
                     });
                     return done(err);
                 }
-                const objMD = ObjectMD.createFromBlob(blob.Body);
-                console.log({ objMD });
-                if (objMD.error) {
+                const { error, result } = ObjectMD.createFromBlob(blob.Body);
+                if (error) {
                     log.error('error parsing metadata blob');
                     return done(errors.InternalError.
                         customizeDescription('error parsing metadata blob'));
                 }
+                const objMD = result;
                 const storageClass = objMD.getDataStoreName();
                 const isExternalCloudSource = storageClass === 'aws-backend';
                 console.log({ isExternalCloudSource });
