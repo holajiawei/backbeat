@@ -225,7 +225,7 @@ class LifecycleBucketProcessor {
             });
             const backbeatMetadataProxy = 
                 new BackbeatMetadataProxy(this._s3Endpoint, this._lcConfig.auth)
-                .setSourceClient(log);
+                .setSourceClient(this._log);
             return this._internalTaskScheduler.push({
                 task: new LifecycleTask(this),
                 rules: config.Rules,
