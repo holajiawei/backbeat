@@ -37,8 +37,11 @@ class GarbageCollectorTask extends BackbeatTask {
     _executeDeleteData(entry, log, done) {
         log.debug('action execution starts', entry.getLogInfo());
         const locations = entry.getAttribute('target.locations');
+        console.log('EXECUTING DELETE DATA');
+        console.log('sourceObject', entry.getAttribute('sourceObject'));
         const req = this._backbeatClient.batchDelete({
             IfUnmodifiedSince: entry.getAttribute('sourceObject.lastModified'),
+            StorageClass: entry.getAttribute('sourceObject.storageClass'),
             Locations: locations.map(location => ({
                 key: location.key,
                 dataStoreName: location.dataStoreName,

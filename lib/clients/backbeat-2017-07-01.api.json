@@ -949,6 +949,10 @@
                         "locationName": "If-Unmodified-Since",
                         "type": "string"
                     },
+                    "StorageClass": {
+                        "location": "header",
+                        "locationName": "X-Scal-Storage-Class"
+                    },
                     "ContentType": {
                         "location": "header",
                         "locationName": "X-Scal-Content-Type"
