@@ -840,7 +840,6 @@ class LifecycleTask extends BackbeatTask {
 
         const storageClass = objectMD.getDataStoreName();
         const isExternalBackend = storageClass === 'aws-backend';
-        console.log({ isExternalBackend });
         if (!isExternalBackend) {
             return cb(null, entry);
         }

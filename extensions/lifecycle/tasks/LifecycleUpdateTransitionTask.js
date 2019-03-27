@@ -84,8 +84,6 @@ class LifecycleUpdateTransitionTask extends BackbeatTask {
 
     _garbageCollectLocation(entry, locations, log, done) {
         const { bucket, key, version, eTag } = entry.getAttribute('target');
-        console.log('LIFECYCLE UPDATE TRANSITION');
-        console.log('sourceObject:', entry.getAttribute('sourceObject'));
         const gcEntry = ActionQueueEntry.create('deleteData')
               .addContext({
                   origin: 'lifecycle',
