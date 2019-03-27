@@ -1013,6 +1013,7 @@ class LifecycleTask extends BackbeatTask {
         };
         this.backbeatMetadataProxy
             .getMetadata(params, log, (err, blob) => {
+                console.log({ err, blob });
                 if (err) {
                     log.error('failed to get object metadata', {
                         method: 'LifecycleTask._compareObject',
@@ -1023,6 +1024,12 @@ class LifecycleTask extends BackbeatTask {
                     return done(err);
                 }
                 const objMD = ObjectMD.createFromBlob(blob.Body);
+                console.log({ objMD });
+                if (objMD.error) {
+                    log.error('error parsing metadata blob');
+                    return done(errors.InternalError.
+                        customizeDescription('error parsing metadata blob'));
+                }
                 const storageClass = objMD.getDataStoreName();
                 const isExternalCloudSource = storageClass === 'aws-backend';
                 console.log({ isExternalCloudSource });
