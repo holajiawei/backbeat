@@ -937,13 +937,21 @@
         "BatchDelete": {
             "http": {
                 "method": "POST",
-                "requestUri": "/_/backbeat/batchdelete"
+                "requestUri": "/_/backbeat/batchdelete/{Bucket}/{Key+}"
             },
             "input": {
                 "type": "structure",
                 "required": [
                 ],
                 "members": {
+                    "Bucket": {
+                        "location": "uri",
+                        "locationName": "Bucket"
+                    },
+                    "Key": {
+                        "location": "uri",
+                        "locationName": "Key"
+                    },
                     "IfUnmodifiedSince": {
                         "location": "header",
                         "locationName": "If-Unmodified-Since",
@@ -952,6 +960,10 @@
                     "StorageClass": {
                         "location": "header",
                         "locationName": "X-Scal-Storage-Class"
+                    },
+                    "Tags": {
+                        "location": "header",
+                        "locationName": "X-Scal-Tags"
                     },
                     "ContentType": {
                         "location": "header",
